@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SNS Analysis</title>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.3.0/chart.umd.js"></script>
+
+  <style>
+    body {
+      font-family: sans-serif;
+      text-align: center;
+      margin: 0;
+      padding: 20px;
+      color: beige;
+      background-color: #333;
+    }
+
+    .charts {
+      margin-top: 50px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100vw, 500px), 1fr));
+      grid-gap: 50px;
+      align-items: center;
+      justify-content: center;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>Analisi di AWS SNS</h1>
+  <h3>Totale email rifiutate: <span id="total-bounced">...</span></h3>
+
+  <div class="charts">
+    <div class="chart-section">
+      <h2>Per IP del server di invio</h2>
+      <div class="chart-container">
+        <canvas id="chart-source-ip"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-section">
+      <h2>Per email di invio</h2>
+      <div class="chart-container">
+        <canvas id="chart-source-email"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-section">
+      <h2>Per topic</h2>
+      <div class="chart-container">
+        <canvas id="chart-topic"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-section">
+      <h2>Per tipologia di bounce</h2>
+      <div class="chart-container">
+        <canvas id="chart-bounce-type"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function getData() {
+      try {
+        const data = await (await fetch('/data')).json();
+        processData(data);
+      } catch (error) {
+        console.log(error)
+      }
+    }
+
+    function getProperty(e, p) {
+      if (!p || !e) return null
+
+      const ps = p.split('.')
+      if (ps.length == 1) return e[ps.shift()]
+
+      return getProperty(e[ps.shift()], ps.join('.'))
+    }
+
+    function dataToPie(data, property) {
+      return Object.values(data.reduce((t, e) => {
+        const prop = getProperty(e, property) || 'non definito';
+
+        const col = t[prop] || { count: 0 }
+        col.prop = prop
+        col.count += 1
+
+        t[prop] = col
+        return t
+      }, {}))
+    }
+
+    function createPie(id, data, prop) {
+      Chart.overrides.pie.plugins.legend.labels.color = 'beige';
+      Chart.overrides.pie.plugins.legend.labels.font = { size: 14 };
+      Chart.overrides.pie.plugins.legend.labels.padding = 15;
+      Chart.overrides.pie.plugins.legend.position = 'bottom';
+
+      const parsedData = dataToPie(data, prop);
+      new Chart(
+        document.getElementById(id),
+        {
+          type: 'pie',
+          data: {
+            labels: parsedData.map(e => e.prop),
+            datasets: [
+              {
+                data: parsedData.map(e => e.count)
+              }
+            ]
+          }
+        }
+      );
+    }
+
+    function processData(data) {
+      document.getElementById('total-bounced').textContent = data.length;
+
+      createPie('chart-source-ip', data, 'mail.sourceIp');
+      createPie('chart-source-email', data, 'mail.source');
+      createPie('chart-topic', data, 'mail.topic');
+      createPie('chart-bounce-type', data, 'bounceSubType');
+    }
+
+    getData()
+  </script>
+</body>
+
+</html>
