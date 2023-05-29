@@ -120,11 +120,16 @@ app.get('/subscription-confirmations', (req, res) => {
   });
 })
 
-app.get('/sns-data', (_, res) => {
+app.get('/sns-data', (req, res) => {
+  let withEmail = false;
+  if (verifyToken(req.headers.authorization)) {
+    withEmail = true;
+  }
+
   db.serialize(async () => {
     db.all("SELECT * FROM sns WHERE message_type = 'Notification'", (_, c) => {
       c.forEach((r) => {
-        r.minimizedData = minimizeData(parseJSON(r?.request))
+        r.minimizedData = minimizeData(parseJSON(r?.request), withEmail)
       })
 
       res.json(c.map((e) => e.minimizedData));

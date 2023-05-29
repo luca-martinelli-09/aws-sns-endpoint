@@ -1,0 +1,14 @@
+version: "3"
+
+services:
+  web:
+    build: .
+    volumes:
+      - ./db:/app/db
+    environment:
+      - FW_ENDPOINTS=
+      - FW_ENDPOINT_TOKENS=
+      - ACCESS_TOKENS=
+      - ACCESS_TOKENS_ALIASES=
+    ports:
+      - "3000:3000"

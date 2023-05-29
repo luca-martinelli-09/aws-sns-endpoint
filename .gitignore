@@ -1,2 +1,3 @@
 node_modules
 db/sns.db
+docker-compose.yml
