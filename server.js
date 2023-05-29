@@ -93,7 +93,7 @@ app.all('/aws/:auth', (req, res) => {
 
       await fetch(endpoint, {
         method: 'POST',
-        headers: { Authorization: token, 'Content-Type': 'application/json' },
+        headers: { Authorization: token, 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify(minimizeData(body, true))
       });
     });
