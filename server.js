@@ -148,7 +148,7 @@ app.get('/check', (req, res) => {
   }
 
   db.serialize(async () => {
-    db.get("SELECT bounced_emails.*, sns.request FROM bounced_emails LEFT JOIN sns ON sns.id = bounced_emails.last_request WHERE email = ?", [req.query.email], (e, r) => {
+    db.get("SELECT bounced_emails.*, sns.request FROM bounced_emails LEFT JOIN sns ON sns.id = bounced_emails.last_request WHERE LOWER(email) = LOWER(?)", [req.query.email], (e, r) => {
       if (e) return res.json({ success: false, error: true, message: e.message })
 
       if (!r) return res.json({ success: true, error: false })
