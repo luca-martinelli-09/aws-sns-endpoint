@@ -4,10 +4,11 @@ services:
   web:
     build: .
     volumes:
-      - ./access.log:/app/access.log
+      - ./db:/app/db
     environment:
       - FW_ENDPOINTS=https://api.mycity.it/apiaperte/aws/sns/handle
       - FW_ENDPOINT_TOKENS=e06f1d5a-a835-4364-ade3-1c9feff062c1
-      - ACCESS_TOKEN=4d15186f-ee60-45eb-8d64-403e164d5812
+      - ACCESS_TOKENS=4d15186f-ee60-45eb-8d64-403e164d5812
+      - ACCESS_TOKENS_ALIASES=aws-sns
     ports:
-      - "1234:3000"
+      - "9080:3000"

@@ -2,11 +2,31 @@ const PORT = 3000;
 const HOST = '0.0.0.0';
 
 const express = require('express')
-const morgan = require('morgan');
-const fs = require('fs');
 const path = require('path');
+const sqlite3 = require('sqlite3');
 
-const logFile = fs.createWriteStream('./access.log', { flags: 'a' });
+const db = new sqlite3.Database('./db/sns.db');
+
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS sns (
+    id INTEGER PRIMARY KEY,
+    date DATE_TIME DEFAULT CURRENT_TIMESTAMP,
+    ip TEXT,
+    method TEXT,
+    message_type TEXT,
+    token_alias TEXT,
+    headers LONGTEXT,
+    request LONGTEXT
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS bounced_emails (
+    email TEXT PRIMARY KEY,
+    date DATE_TIME DEFAULT CURRENT_TIMESTAMP,
+    last_request INTEGER,
+
+    FOREIGN KEY (last_request) REFERENCES sns(id) ON UPDATE CASCADE ON DELETE SET NULL
+  )`);
+});
 
 const app = express()
 
@@ -14,56 +34,123 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(express.text());
 
-morgan.token('body', req => {
-  return req.body
-})
+const verifyToken = (token) => {
+  if (!process.env.ACCESS_TOKENS) return 'no-token';
 
-morgan.token('headers', function (req, res) {
-  return req.headers
-})
+  const tokens = process.env.ACCESS_TOKENS.split(',')
+  const aliases = process.env.ACCESS_TOKENS_ALIASES ? process.env.ACCESS_TOKENS_ALIASES.split(',') : null
 
-app.use(morgan(function (tokens, req, res) {
-  return JSON.stringify({
-    date: tokens.date(req, res),
-    ip: tokens['remote-addr'](req, res),
-    method: tokens.method(req, res),
-    url: tokens.url(req, res),
-    status: tokens.status(req, res),
-    headers: tokens.headers(req, res),
-    request: tokens.body(req, res),
-  });
-}, {
-  stream: logFile,
-  skip: function (req, res) { return req.url != '/aws' }
-}));
+  if (tokens.length <= 0) return 'no-token'
 
-app.all('/aws', (req, res) => {
+  const i = tokens.findIndex((t) => t == token)
+
+  if (!aliases && i >= 0) return i
+
   try {
-    const fwEndpoints = process.env.FW_ENDPOINTS.split(',')
-    const fwEndpointTokens = process.env.FW_ENDPOINT_TOKENS.split(',')
+    return aliases[i]
+  } catch (e) { }
+
+  return null;
+}
+
+app.all('/aws/:auth', (req, res) => {
+  const tokenAlias = verifyToken(req.params.auth);
+  if (!tokenAlias) {
+    res.statusCode = 401;
+    return res.send('Unauthorized')
+  }
+
+  let body = parseJSON(req.body)
+  if (body?.Type) {
+    messageType = body?.Type
+    body.Message = parseJSON(body?.Message);
+
+    db.serialize(async () => {
+      db.run("INSERT INTO sns (ip, method, message_type, token_alias, headers, request) VALUES (?, ?, ?, ?, ?, ?)", [req.ip, req.method, messageType, tokenAlias, JSON.stringify(req.headers), JSON.stringify(body)]);
+
+      if (body?.Message?.bounce?.bouncedRecipients) {
+        db.get('SELECT last_insert_rowid() as id', (e, last) => {
+          if (e) return;
+
+          const stmt = db.prepare("INSERT OR REPLACE INTO bounced_emails (email, last_request) VALUES (?, ?)");
+          body.Message.bounce.bouncedRecipients.forEach((be) => {
+            stmt.run([be.emailAddress, last.id])
+          });
+        })
+      }
+    });
+  }
+
+  try {
+    const fwEndpoints = process.env.FW_ENDPOINTS ? process.env.FW_ENDPOINTS.split(',') : []
+    const fwEndpointTokens = process.env.FW_ENDPOINT_TOKENS ? process.env.FW_ENDPOINT_TOKENS.split(',') : []
 
     fwEndpoints.forEach(async (endpoint, i) => {
-      const token = fwEndpointTokens[i]
+      let token;
+      try {
+        token = fwEndpointTokens[i]
+      } catch (e) { }
 
       await fetch(endpoint, {
         method: 'POST',
         headers: { Authorization: token },
-        body: JSON.stringify(minimizeData(req.body, true))
+        body: JSON.stringify(minimizeData(body, true))
       });
     });
   } catch (error) { console.log(error) }
 
-  res.json(req.body);
+  res.json(body);
 })
 
-app.get('/access', (req, res) => {
-  if (req.headers.Authorization !== process.env.ACCESS_TOKEN) res.statusCode = 401, res.send('Unauthorized');
+app.get('/subscription-confirmations', (req, res) => {
+  if (!verifyToken(req.headers.authorization)) {
+    res.statusCode = 401
+    return res.send('Unauthorized');
+  }
 
-  fs.createReadStream("./access.log").pipe(res);
+  db.serialize(async () => {
+    db.all("SELECT * FROM sns WHERE message_type = 'SubscriptionConfirmation'", (_, c) => {
+      c.forEach((r) => {
+        r.headers = parseJSON(r?.headers)
+        r.request = parseJSON(r?.request)
+      })
+
+      res.json(c);
+    })
+  });
 })
 
-app.get('/chart', (req, res) => {
-  res.sendFile(path.join(__dirname + "/chart.html"));
+app.get('/sns-data', (_, res) => {
+  db.serialize(async () => {
+    db.all("SELECT * FROM sns WHERE message_type = 'Notification'", (_, c) => {
+      c.forEach((r) => {
+        r.minimizedData = minimizeData(parseJSON(r?.request))
+      })
+
+      res.json(c.map((e) => e.minimizedData));
+    })
+  });
+})
+
+app.get('/sns-analysis', (_, res) => {
+  res.sendFile(path.join(__dirname + "/src/chart.html"));
+})
+
+app.get('/check', (req, res) => {
+  if (!verifyToken(req.headers.authorization)) {
+    res.statusCode = 401
+    return res.send('Unauthorized');
+  }
+
+  db.serialize(async () => {
+    db.get("SELECT bounced_emails.*, sns.request FROM bounced_emails LEFT JOIN sns ON sns.id = bounced_emails.last_request WHERE email = ?", [req.query.email], (e, r) => {
+      if (e) return res.json({ success: false, error: true, message: e.message })
+
+      if (!r) return res.json({ success: true, error: false })
+
+      return res.json({ success: false, error: false, message: parseJSON(r?.request) })
+    })
+  });
 })
 
 const parseJSON = (str, def = false) => {
@@ -76,7 +163,6 @@ const parseJSON = (str, def = false) => {
 
 const minimizeData = (request, withEmail = false) => {
   let snsMessage = request?.Message
-  request.Message = parseJSON(snsMessage)
 
   if (!request?.Message?.bounce) return null;
 
@@ -100,24 +186,5 @@ const minimizeData = (request, withEmail = false) => {
 
   return minimizedData
 }
-
-app.get('/data', (req, res) => {
-  const data = fs.readFileSync("./access.log", "utf-8");
-  const lines = data.split('\n');
-
-  jsonData = []
-  lines.forEach(line => {
-    let json = parseJSON(line, null)
-    if (!json) return
-
-    json.request = parseJSON(json.request)
-
-    const minimizedData = minimizeData(json.request, false)
-
-    if (minimizedData) jsonData.push(minimizedData)
-  });
-
-  res.json(jsonData);
-})
 
 app.listen(PORT, HOST)
